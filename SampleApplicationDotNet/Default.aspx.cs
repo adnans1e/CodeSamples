@@ -7,8 +7,10 @@ using System.Web.UI;
 using System.Web.UI.WebControls;
 using System.Web.Configuration;
 using System.Runtime.Serialization.Json;
-using Microsoft.Http;
-using Microsoft.ServiceModel.Web;
+using System.Net.Http;
+using System.Web.Http;
+using System.Net;
+using System.ServiceModel.Web;
 
 using SampleApplicationDotNet.DataTypes;
 
@@ -37,13 +39,14 @@ namespace SampleApplicationDotNet
 
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
 
-            using (HttpClient client = new HttpClient(baseurl))
-            {
-                HttpResponseMessage resp = client.Get("Security.svc/getsites/" + EnterpriseBox.Text);
-                resp.EnsureStatusIsSuccessful();
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Security.svc/getsites/" + EnterpriseBox.Text);
+            request.Method = "GET";
 
+            try
+            {
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer siteSer = new DataContractJsonSerializer(typeof(Entry[]));
-                Entry[] sites = (Entry[])siteSer.ReadObject(resp.Content.ReadAsStream());
+                Entry[] sites = (Entry[])siteSer.ReadObject(webResponse.GetResponseStream());
 
                 foreach (Entry site in sites)
                 {
@@ -52,6 +55,30 @@ namespace SampleApplicationDotNet
                     Panel1.Controls.Add(label);
                 }
             }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            } 
+
+            //using (HttpClient client = new HttpClient())
+            //{
+            //    HttpResponseMessage resp = client.GetAsync(baseurl + "Security.svc/getsites/" + EnterpriseBox.Text);
+            //    resp.EnsureSuccessStatusCode();
+
+            //    DataContractJsonSerializer siteSer = new DataContractJsonSerializer(typeof(Entry[]));
+            //    Entry[] sites = (Entry[])siteSer.ReadObject(resp.Content.ReadAsStreamAsync());
+
+            //    foreach (Entry site in sites)
+            //    {
+            //        Label label = new Label();
+            //        label.Text = "<a href=\"Workbench.aspx?site=" + site.Key.ToString() + "\">" + site.Value + "</a></br>";
+            //        Panel1.Controls.Add(label);
+            //    }
+            //}
         }
     }
 }

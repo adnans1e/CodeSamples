@@ -7,10 +7,11 @@ using System.Web.UI;
 using System.Web.UI.WebControls;
 using System.Web.Configuration;
 using System.Web.Script.Serialization;
-using Microsoft.Http;
-using Microsoft.Http.Headers;
-using Microsoft.ServiceModel.Web;
+using System.Net.Http;
+using System.ServiceModel.Web;
 using System.Runtime.Serialization.Json;
+using System.Text;
+using System.IO;
 
 using SampleApplicationDotNet.DataTypes;
 
@@ -29,7 +30,6 @@ namespace SampleApplicationDotNet
                 {
                     string siteid = Request["site"].ToString();
                     Session["SessionID"] = siteid;
-
                     Logon(siteid);
                     LogonSite();
                     DisplaySiteInfo();
@@ -44,7 +44,7 @@ namespace SampleApplicationDotNet
             {
                 string token = Session["SecurityToken"].ToString();
             }
-        }
+        }       
 
         /// <summary>
         /// Example of calling the Security.svc/login method to log into ETO.
@@ -56,20 +56,28 @@ namespace SampleApplicationDotNet
             string password = Session["Password"].ToString();
             string enterprise = Session["EnterpriseGUID"].ToString();
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
-            
+
+            string json = string.Format("{{\"security\":{{\"Email\":\"{0}\",\"Password\":\"{1}\"}}}}", userName, password);
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Security.svc/SSOAuthenticate/");
+            request.Method = "POST";
+            request.ContentType = "application/json";
+            request.ContentLength = json.Length;
+            StreamWriter requestWriter = new StreamWriter(request.GetRequestStream(), System.Text.Encoding.ASCII);
+            requestWriter.Write(json);
+            requestWriter.Close();
+
             try
             {
-                HttpClient client = new HttpClient(baseurl);
-                //below is incorrect
-                string json = string.Format("{{\"security\":{{\"Email\":\"{0}\",\"Password\":\"{1}\"}}}}", userName, password);
-
-                HttpContent content = HttpContent.Create(json,"application/json");
-                HttpResponseMessage resp = client.Post("Security.svc/SSOAuthenticate/", content);
-                resp.EnsureStatusIsSuccessful();
+                // get the response
+                WebResponse webResponse = request.GetResponse();                
 
                 DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(SSOAuthenticateResponseObject));
-                SSOAuthenticateResponseObject SSOAuthenticationResponse = serializer.ReadObject(resp.Content.ReadAsStream()) as SSOAuthenticateResponseObject;
-                Session["AuthToken"] = SSOAuthenticationResponse.SSOAuthenticateResult.SSOAuthToken;
+                SSOAuthenticateResponseObject SSOAuthenticationResponse = serializer.ReadObject(webResponse.GetResponseStream()) as SSOAuthenticateResponseObject;
+                Session["AuthToken"] = SSOAuthenticationResponse.SSOAuthenticateResult.SSOAuthToken;                
+            }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
             }
             catch (Exception ex)
             {
@@ -88,15 +96,24 @@ namespace SampleApplicationDotNet
             string authtoken = Session["AuthToken"].ToString();
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
 
-            using (HttpClient client = new HttpClient(baseurl))
-            {
-                HttpResponseMessage resp = client.Send(HttpMethod.GET, string.Format("Security.svc/SSOSiteLogin/{0}/{1}/{2}/-300", siteid, enterprise, authtoken));
-                resp.EnsureStatusIsSuccessful();
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + string.Format("Security.svc/SSOSiteLogin/{0}/{1}/{2}/5", siteid, enterprise, authtoken));
+            request.Method = "GET";
 
+            try
+            {
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer siteSer = new DataContractJsonSerializer(typeof(string));
-                string SiteLoginResponse = siteSer.ReadObject(resp.Content.ReadAsStream()) as string;
+                string SiteLoginResponse = siteSer.ReadObject(webResponse.GetResponseStream()) as string;
                 Session["SecurityToken"] = SiteLoginResponse;
             }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            } 
         }
 
         /// <summary>
@@ -107,22 +124,20 @@ namespace SampleApplicationDotNet
         {
             string siteid = Session["SessionID"].ToString();
             string enterprise = Session["EnterpriseGUID"].ToString();
-            string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
-            string securitytoken = Session["SecurityToken"].ToString();
-            string authtoken = Session["AuthToken"].ToString();
+            string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];           
 
-            using (HttpClient client = new HttpClient(baseurl))
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Security.svc/GetSiteInfo/" + siteid);
+            request.Method = "GET";
+            WebHeaderCollection headers = new WebHeaderCollection();
+            headers.Add("enterpriseGuid", enterprise);
+            headers.Add("securityToken", Session["SecurityToken"].ToString());            
+            request.Headers = headers;
+
+            try
             {
-                RequestHeaders headers = new RequestHeaders();
-                headers.Add("Content-Type", "application/json");
-                headers.Add("enterpriseGuid", enterprise);
-                headers.Add("securityToken", securitytoken);
-
-                HttpResponseMessage resp = client.Send(HttpMethod.GET, "Security.svc/GetSiteInfo/" + siteid, headers);
-                resp.EnsureStatusIsSuccessful();
-
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer siteSer = new DataContractJsonSerializer(typeof(SiteInfo));
-                SiteInfo siteInfo = (SiteInfo)siteSer.ReadObject(resp.Content.ReadAsStream());
+                SiteInfo siteInfo = (SiteInfo)siteSer.ReadObject(webResponse.GetResponseStream());
 
                 SiteNameLabel.Text = siteInfo.SiteName;
                 AddressLabel.Text = siteInfo.Address1 + " " + siteInfo.Address2;
@@ -130,6 +145,14 @@ namespace SampleApplicationDotNet
                 ZipLabel.Text = siteInfo.ZipCode;
                 DisabledLabel.Text = siteInfo.Disabled ? "Yes" : "No";
             }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            } 
         }
 
         /// <summary>
@@ -142,23 +165,32 @@ namespace SampleApplicationDotNet
             string enterprise = Session["EnterpriseGUID"].ToString();
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
 
-            using (HttpClient client = new HttpClient(baseurl))
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Form.svc/Forms/Program/GetPrograms/" + siteid);
+            request.Method = "GET";
+            WebHeaderCollection headers = new WebHeaderCollection();
+            headers.Add("enterpriseGuid", enterprise);
+            headers.Add("securityToken", Session["SecurityToken"].ToString());
+            request.Headers = headers;
+
+            try
             {
-                RequestHeaders headers = new RequestHeaders();
-                headers.Add("enterpriseGuid", enterprise);
-                headers.Add("securityToken", Session["SecurityToken"].ToString());
-
-                HttpResponseMessage resp = client.Send(HttpMethod.GET, "Form.svc/Forms/Program/GetPrograms/" + siteid, headers);
-                resp.EnsureStatusIsSuccessful();
-
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer ser = new DataContractJsonSerializer(typeof(ProgramInfo[]));
-                ProgramInfo[] progInfo = (ProgramInfo[])ser.ReadObject(resp.Content.ReadAsStream());
+                ProgramInfo[] progInfo = (ProgramInfo[])ser.ReadObject(webResponse.GetResponseStream());
 
                 foreach (ProgramInfo pinfo in progInfo)
                 {
                     ProgramDropList.Items.Add(new ListItem(pinfo.Name, pinfo.ID.ToString()));
                 }
             }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            }             
         }
 
         /// <summary>
@@ -171,21 +203,21 @@ namespace SampleApplicationDotNet
             string siteid = Session["SessionID"].ToString();
             string enterprise = Session["EnterpriseGUID"].ToString();
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
+            string programId = ProgramDropList.SelectedValue;
+            string searchtext = SearchText.Text;
+            
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Search.svc/Search/" + programId + "/" + searchtext);
+            request.Method = "GET";
+            WebHeaderCollection headers = new WebHeaderCollection();
+            headers.Add("enterpriseGuid", enterprise);
+            headers.Add("securityToken", Session["SecurityToken"].ToString());
+            request.Headers = headers;
 
-            using (HttpClient client = new HttpClient(baseurl))
+            try
             {
-                RequestHeaders headers = new RequestHeaders();
-                headers.Add("enterpriseGuid", enterprise);
-                headers.Add("securityToken", Session["SecurityToken"].ToString());
-
-                string programId = ProgramDropList.SelectedValue;
-                string searchtext = SearchText.Text;
-
-                HttpResponseMessage resp = client.Send(HttpMethod.GET, "Search.svc/Search/" + programId + "/" + searchtext, headers);
-                resp.EnsureStatusIsSuccessful();
-
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer ser = new DataContractJsonSerializer(typeof(SearchResult[]));
-                SearchResult[] results = (SearchResult[])ser.ReadObject(resp.Content.ReadAsStream());
+                SearchResult[] results = (SearchResult[])ser.ReadObject(webResponse.GetResponseStream());
 
                 if (results.Length == 0)
                 {
@@ -199,41 +231,55 @@ namespace SampleApplicationDotNet
                     }
                 }
             }
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            } 
         }
 
-        /// <summary>
-        /// Example of calling Actor.svc/participant to get participant details
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        ///// <summary>
+        ///// Example of calling Actor.svc/participant to get participant details
+        ///// </summary>
+        ///// <param name="sender"></param>
+        ///// <param name="e"></param>
         protected void SearchResults_SelectedIndexChanged(object sender, EventArgs e)
         {
             string siteid = Session["SessionID"].ToString();
             string enterprise = Session["EnterpriseGUID"].ToString();
             string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
-            string clid = null;
+            string clid = SearchResults.SelectedValue;
 
-            using (HttpClient client = new HttpClient(baseurl))
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(baseurl + "Actor.svc/participant/" + clid);
+            request.Method = "GET";
+            WebHeaderCollection headers = new WebHeaderCollection();
+            headers.Add("enterpriseGuid", enterprise);
+            headers.Add("securityToken", Session["SecurityToken"].ToString());
+            request.Headers = headers;
+
+            try
             {
-                RequestHeaders headers = new RequestHeaders();
-                headers.Add("enterpriseGuid", enterprise);
-                headers.Add("securityToken", Session["SecurityToken"].ToString());
-
-                clid = SearchResults.SelectedValue;
-
-                HttpResponseMessage resp = client.Send(HttpMethod.GET, "Actor.svc/participant/" + clid, headers);
-                resp.EnsureStatusIsSuccessful();
-
+                WebResponse webResponse = request.GetResponse();
                 DataContractJsonSerializer ser = new DataContractJsonSerializer(typeof(Participant));
-                Participant participant = (Participant)ser.ReadObject(resp.Content.ReadAsStream());
+                Participant participant = (Participant)ser.ReadObject(webResponse.GetResponseStream());
 
                 PartNameLabel.Text = participant.FirstName + " " + participant.LastName;
                 PartIdLabel.Text = participant.ID.ToString();
                 PartAddrLabel.Text = participant.Address1 + " " + participant.Address2;
                 PartGenderLabel.Text = participant.Gender.ToString();
             }
-
-            DisplayAssessments(clid);
+            catch (WebException we)
+            {
+                string webExceptionMessage = we.Message;
+            }
+            catch (Exception ex)
+            {
+                Response.Redirect("Default.aspx");
+            } 
+        //    DisplayAssessments(clid);
         }
 
         /// <summary>
@@ -241,36 +287,36 @@ namespace SampleApplicationDotNet
         /// to get a list of assessment responses for a participant.
         /// </summary>
         /// <param name="clid"></param>
-        private void DisplayAssessments(string clid)
-        {
-            string siteid = Session["SessionID"].ToString();
-            string enterprise = Session["EnterpriseGUID"].ToString();
-            string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
+        //private void DisplayAssessments(string clid)
+        //{
+        //    string siteid = Session["SessionID"].ToString();
+        //    string enterprise = Session["EnterpriseGUID"].ToString();
+        //    string baseurl = WebConfigurationManager.AppSettings["ETOSoftwareWS_BaseUrl"];
 
-            using (HttpClient client = new HttpClient(baseurl))
-            {
-                RequestHeaders headers = new RequestHeaders();
-                headers.Add("enterpriseGuid", enterprise);
-                headers.Add("securityToken", Session["SecurityToken"].ToString());
+        //    using (HttpClient client = new HttpClient(baseurl))
+        //    {
+        //        RequestHeaders headers = new RequestHeaders();
+        //        headers.Add("enterpriseGuid", enterprise);
+        //        headers.Add("securityToken", Session["SecurityToken"].ToString());
 
-                string body = "{\"CLID\":\"";
-                body = body + clid + "\",\"surveyResponderType\":";
-                body = body + (int)SurveyResponderType.Client + "}";
+        //        string body = "{\"CLID\":\"";
+        //        body = body + clid + "\",\"surveyResponderType\":";
+        //        body = body + (int)SurveyResponderType.Client + "}";
 
-                HttpResponseMessage resp = client.Send(HttpMethod.POST, 
-                                                    "Form.svc/Forms/Assessments/GetAllAssessementResponses/",
-                                                    headers, HttpContent.Create(body, "application/json; charset=utf-8"));
-                resp.EnsureStatusIsSuccessful();
+        //        HttpResponseMessage resp = client.Send(HttpMethod.POST, 
+        //                                            "Form.svc/Forms/Assessments/GetAllAssessementResponses/",
+        //                                            headers, HttpContent.Create(body, "application/json; charset=utf-8"));
+        //        resp.EnsureStatusIsSuccessful();
 
-                DataContractJsonSerializer ser = new DataContractJsonSerializer(typeof(AssessmentResponse[]));
-                AssessmentResponse[] responses = (AssessmentResponse[])ser.ReadObject(resp.Content.ReadAsStream());
+        //        DataContractJsonSerializer ser = new DataContractJsonSerializer(typeof(AssessmentResponse[]));
+        //        AssessmentResponse[] responses = (AssessmentResponse[])ser.ReadObject(resp.Content.ReadAsStream());
 
-                foreach (AssessmentResponse response in responses)
-                {
-                    Panel2.Controls.Add(new LinkButton() { Text = response.SurveyName + " " + response.SurveyDate.ToString() + " " +
-                        response.SurveyResponseID.ToString() + " " + response.SurveyTaker });
-                }
-            }
-        }
+        //        foreach (AssessmentResponse response in responses)
+        //        {
+        //            Panel2.Controls.Add(new LinkButton() { Text = response.SurveyName + " " + response.SurveyDate.ToString() + " " +
+        //                response.SurveyResponseID.ToString() + " " + response.SurveyTaker });
+        //        }
+        //    }
+        //}
     }
 }
